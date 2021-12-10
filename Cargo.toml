@@ -12,7 +12,7 @@ license = "MIT"
 [dependencies]
 cortex-m-rt = { version = "0.7.0", features = ["device"] }
 cortex-m = "0.7.3"
-rp2040-hal = { git = "https://github.com/rp-rs/rp-hal", rev = "9d56062e447957f7304c31cbe7153abfe70a4f28", features = ["rt"] }
+rp2040-hal = { git = "https://github.com/rp-rs/rp-hal", rev = "427344667e9f24f03d132fa08e2dfaa709bc805d", features = ["rt"] }
 embedded-time = "0.12.0"
 usb-device= "0.2.8"
 panic-halt= "0.2.0"

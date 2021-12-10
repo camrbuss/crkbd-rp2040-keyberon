@@ -4,22 +4,22 @@
 use panic_halt as _;
 use rp2040_hal as hal;
 
+mod layout;
+
 #[link_section = ".boot2"]
 #[used]
 pub static BOOT2: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 #[rtic::app(device = crate::hal::pac, peripherals = true, dispatchers = [PIO0_IRQ_0])]
 mod app {
+    use crate::layout::CustomActions;
     use embedded_hal::digital::v2::InputPin;
     use embedded_hal::watchdog::{Watchdog, WatchdogEnable};
     use embedded_time::duration::Extensions;
     use hal::gpio::DynPin;
     use hal::usb::UsbBus;
-    use keyberon::action;
-    use keyberon::action::Action;
     use keyberon::debounce::Debouncer;
     use keyberon::key_code;
-    use keyberon::key_code::KeyCode;
     use keyberon::layout;
     use keyberon::layout::Layout;
     use keyberon::matrix::{Matrix, PressedKeys};
@@ -30,63 +30,14 @@ mod app {
     const SCAN_TIME_US: u32 = 1000;
     static mut USB_BUS: Option<usb_device::bus::UsbBusAllocator<hal::usb::UsbBus>> = None;
 
-    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-    pub enum CustomActions {
-        Uf2,
-        Reset,
-    }
-    const UF2: Action<CustomActions> = Action::Custom(CustomActions::Uf2);
-    const RESET: Action<CustomActions> = Action::Custom(CustomActions::Reset);
-
-    const L4_SPACE: Action<CustomActions> = Action::HoldTap {
-        timeout: 200,
-        hold: &action::l(4),
-        tap: &action::k(KeyCode::Space),
-        config: action::HoldTapConfig::Default,
-        tap_hold_interval: 0,
-    };
-
-    #[rustfmt::skip]
-    pub static LAYERS: keyberon::layout::Layers<CustomActions> = keyberon::layout::layout! {
-        { // 0
-            [ Tab    Q W E     R   T      Y          U   I     O P Enter  ]
-            [ LShift A S D     F   G      H          J   K     L ; RShift ]
-            [ LAlt   Z X C     V   B      N          M   ,     . / RCtrl  ]
-            [ t      t t {UF2} (1) BSpace {L4_SPACE} (2) {UF2} t t t      ]
-        }
-        { // 1
-            [ t t t t t t * 7 8 9 + t ]
-            [ t t t t t t / 4 5 6 - t ]
-            [ t t t t t t t 1 2 3 . t ]
-            [ t t t t t t t 0 t t t t ]
-        }
-        { // 2
-            [ t      !   @   #   $   %       t       '_' |    =   +     t ]
-            [ Escape '{' '}' '(' ')' t       '`'     ~   /    '"' Quote t ]
-            [ t      '[' ']' ^   &   *       t       -   '\\' t   t     t ]
-            [ t      t   t   t   t   {RESET} {RESET} t   t    t   t     t ]
-        }
-        { // 3
-            [ t t t t t t t t t t t t ]
-            [ t t t t t t t t t t t t ]
-            [ t t t t t t t t t t t t ]
-            [ t t t t t t t t t t t t ]
-        }
-        { // 4
-            [ t t t t t      t MediaNextSong MediaPlayPause MediaVolDown MediaVolUp PScreen t ]
-            [ t t t t t      t Left          Down           Up           Right      t       t ]
-            [ t t t t t      t t             Home           PgDown       PgUp       End     t ]
-            [ t t t t Delete t t             t              t            t          t       t ]
-        }
-    };
-
     #[shared]
     struct Shared {
         usb_dev: usb_device::device::UsbDevice<'static, hal::usb::UsbBus>,
         usb_class:
             keyberon::hid::HidClass<'static, hal::usb::UsbBus, keyberon::keyboard::Keyboard<()>>,
         uart: hal::pac::UART0,
-        scan_timer: hal::pac::TIMER,
+        timer: hal::timer::Timer,
+        alarm: hal::timer::Alarm0,
         #[lock_free]
         matrix: Matrix<DynPin, DynPin, 6, 4>,
         layout: Layout<CustomActions>,
@@ -166,9 +117,9 @@ mod app {
         uart.uartimsc.write(|w| w.rxim().set_bit());
 
         if is_right {
-            let _tx_pin = pins.gpio0.into_mode::<hal::gpio::FunctionUart>();
-        } else {
             let _rx_pin = pins.gpio1.into_mode::<hal::gpio::FunctionUart>();
+        } else {
+            let _tx_pin = pins.gpio0.into_mode::<hal::gpio::FunctionUart>();
         }
 
         let matrix: Matrix<DynPin, DynPin, 6, 4> = cortex_m::interrupt::free(move |_cs| {
@@ -197,7 +148,7 @@ mod app {
         })
         .unwrap();
 
-        let layout = Layout::new(LAYERS);
+        let layout = Layout::new(crate::layout::LAYERS);
         let debouncer: keyberon::debounce::Debouncer<keyberon::matrix::PressedKeys<6, 4>> =
             Debouncer::new(PressedKeys::default(), PressedKeys::default(), 10);
 
@@ -214,14 +165,10 @@ mod app {
         let usb_class = keyberon::new_class(unsafe { USB_BUS.as_ref().unwrap() }, ());
         let usb_dev = keyberon::new_device(unsafe { USB_BUS.as_ref().unwrap() });
 
-        // TODO: use rp hal abstraction instead of register level alarm
-        let timer = c.device.TIMER;
-        timer.dbgpause.write(|w| w.dbg0().set_bit());
-        let current_time = timer.timelr.read().bits();
-        timer
-            .alarm0
-            .write(|w| unsafe { w.bits(current_time + SCAN_TIME_US) });
-        timer.inte.write(|w| w.alarm_0().set_bit());
+        let mut timer = hal::Timer::new(c.device.TIMER, &mut resets);
+        let mut alarm = timer.alarm_0().unwrap();
+        let _ = alarm.schedule(SCAN_TIME_US.microseconds());
+        alarm.enable_interrupt(&mut timer);
 
         // Start watchdog and feed it with the lowest priority task at 1000hz
         watchdog.start(10_000.microseconds());
@@ -231,7 +178,8 @@ mod app {
                 usb_dev,
                 usb_class,
                 uart,
-                scan_timer: timer,
+                timer,
+                alarm,
                 matrix,
                 layout,
                 debouncer,
@@ -265,7 +213,7 @@ mod app {
             }
             None => match c.shared.layout.lock(|l| l.tick()) {
                 layout::CustomEvent::Press(event) => match event {
-                    CustomActions::Uf2 => {
+                    CustomActions::Bootload => {
                         hal::rom_data::reset_to_usb_boot(0, 0);
                     }
                     CustomActions::Reset => {
@@ -292,17 +240,15 @@ mod app {
     #[task(
         binds = TIMER_IRQ_0,
         priority = 1,
-        shared = [uart, matrix, debouncer, scan_timer, layout, &transform, watchdog],
+        shared = [uart, matrix, debouncer, timer, alarm, layout, &transform, watchdog],
     )]
     fn scan_timer_irq(mut c: scan_timer_irq::Context) {
-        // TODO: use timer hal
-        let mut timer = c.shared.scan_timer;
-        let current_time = timer.lock(|t| t.timerawl.read().bits());
-        timer.lock(|t| {
-            t.alarm0
-                .write(|w| unsafe { w.bits(current_time + SCAN_TIME_US) })
+        let timer = c.shared.timer;
+        let alarm = c.shared.alarm;
+        (timer, alarm).lock(|t, a| {
+            a.clear_interrupt(t);
+            let _ = a.schedule(SCAN_TIME_US.microseconds());
         });
-        timer.lock(|t| t.intr.write(|w| w.alarm_0().set_bit()));
 
         c.shared.watchdog.feed();
 

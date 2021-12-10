@@ -524,9 +524,10 @@ dependencies = [
 [[package]]
 name = "rp2040-hal"
 version = "0.3.0"
-source = "git+https://github.com/rp-rs/rp-hal?rev=9d56062e447957f7304c31cbe7153abfe70a4f28#9d56062e447957f7304c31cbe7153abfe70a4f28"
+source = "git+https://github.com/rp-rs/rp-hal?rev=427344667e9f24f03d132fa08e2dfaa709bc805d#427344667e9f24f03d132fa08e2dfaa709bc805d"
 dependencies = [
  "cortex-m",
+ "critical-section",
  "embedded-hal",
  "embedded-time",
  "itertools",
@@ -542,9 +543,9 @@ dependencies = [
 
 [[package]]
 name = "rp2040-pac"
-version = "0.1.5"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b6e222c239e9f08d36faf5e2372b4eb0661b3535e3b28942db1e937a9d15f76"
+checksum = "d498094687d95e99642d0b220353781ee341760624a44cfe7b8b5e0cf424cd4f"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
